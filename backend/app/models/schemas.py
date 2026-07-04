@@ -38,3 +38,4 @@ class SessionOut(BaseModel):
 class TranscribeResponse(BaseModel):
     turn: TranscriptTurn | None = None
     turns: list[TranscriptTurn] = []
+    correction_applied: bool = False

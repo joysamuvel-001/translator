@@ -77,11 +77,38 @@ def enroll_speaker(name: str, waveform: np.ndarray, sr: int) -> dict:
         )
 
     vector = embed(waveform, sr)
+
+    # Look for an existing speaker with this exact name — average into it
+    # instead of creating a duplicate entry, so repeated enrollments improve
+    # one voiceprint rather than fragmenting into several partial ones.
+    existing_path = None
+    existing_record = None
+    for path in settings.speakers_dir.glob("*.json"):
+        record = json.loads(path.read_text())
+        if record["name"].strip().lower() == name.strip().lower():
+            existing_path = path
+            existing_record = record
+            break
+
+    if existing_record:
+        old_vector = np.array(existing_record["embedding"])
+        prev_count = existing_record.get("sample_count", 1)
+        new_count = prev_count + 1
+        averaged = (old_vector * prev_count + vector) / new_count
+        averaged = averaged / (np.linalg.norm(averaged) + 1e-9)
+
+        existing_record["embedding"] = averaged.tolist()
+        existing_record["sample_count"] = new_count
+        existing_record["sample_duration_sec"] = existing_record.get("sample_duration_sec", 0) + dur
+        existing_path.write_text(json.dumps(existing_record))
+        return {k: v for k, v in existing_record.items() if k != "embedding"}
+
     speaker_id = str(uuid.uuid4())
     record = {
         "id": speaker_id,
         "name": name,
         "embedding": vector.tolist(),
+        "sample_count": 1,
         "enrolled_at": datetime.now(timezone.utc).isoformat(),
         "sample_duration_sec": dur,
     }

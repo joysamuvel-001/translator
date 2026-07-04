@@ -21,9 +21,8 @@ class Settings(BaseSettings):
     audio_dir: Path = BASE_DIR / "storage" / "audio"
 
     # --- ASR: AI4Bharat IndicConformer (multilingual) ---
-    # Hybrid CTC/RNNT NeMo checkpoint, supports 22 Indic languages + English.
     asr_model_name: str = "ai4bharat/indicconformer_stt_multilingual"
-    asr_decoding_strategy: str = "rnnt"  # "ctc" also available on the hybrid model
+    asr_decoding_strategy: str = "rnnt"
     sample_rate: int = 16000
 
     # --- Translation: AI4Bharat IndicTrans2 (Indic -> English) ---
@@ -32,12 +31,16 @@ class Settings(BaseSettings):
 
     # --- Speaker ID: NVIDIA TitaNet-Large ---
     speaker_model_name: str = "nvidia/speakerverification_en_titanet_large"
-    speaker_match_threshold: float = 0.65  # cosine similarity floor to accept an identity
+    speaker_match_threshold: float = 0.65
     enrollment_min_seconds: float = 5.0
     enrollment_max_seconds: float = 10.0
 
     # --- Device ---
-    device: str = "cuda"  # falls back to "cpu" automatically if unavailable
+    device: str = "cuda"
+
+    # --- Correction: MedGemma via RunPod serverless ---
+    runpod_api_key: str
+    runpod_medgemma_endpoint_id: str
 
     class Config:
         env_file = ".env"
@@ -46,4 +49,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
