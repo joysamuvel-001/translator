@@ -58,12 +58,6 @@ export default function TranscriptCard({ turn }) {
 
       <p className="mt-3 text-[0.95rem] leading-relaxed text-text-primary">{turn.source_text}</p>
 
-      {turn.detected_language !== 'English' && (
-        <p className="mt-2 pt-2 border-t border-ink-border/70 text-[0.84rem] leading-relaxed text-text-muted italic">
-          {turn.translated_text}
-        </p>
-      )}
-
       <footer className="mt-2.5 text-[0.68rem] font-mono text-text-faint">
         via {turn.speaker_id ? `speaker_${turn.speaker_id.slice(0, 6)}` : 'unidentified_voice'}
       </footer>
