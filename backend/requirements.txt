@@ -1,15 +1,40 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
-pydantic==2.9.2
-pydantic-settings==2.5.2
-torch==2.3.1
-torchaudio==2.3.1
-nemo_toolkit[asr]==1.23.0
-soundfile==0.12.1
-numpy==1.26.4
-scipy==1.13.1
-aiofiles==24.1.0
-python-jose==3.3.0
-SQLAlchemy==2.0.34
-webrtcvad
+# ── Core web framework ───────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+
+# ── PyTorch / audio (CPU wheels — pinned for NeMo + pyannote compat) ──
+# Install these from the CPU index if not already present:
+#   pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0
+torchaudio==2.6.0
+
+# NumPy MUST stay below 2.0 — pyannote.audio's Inference class references
+# np.NaN (removed in NumPy 2.0), and some NeMo utility paths assume 1.x.
+numpy<2.0
+
+# ── Diarization ─────────────────────────────────────────────────────
+# 3.3.2, NOT 3.1.x — pyannote.audio <3.3 calls torchaudio.get_audio_backend(),
+# which was removed in torchaudio 2.1+. 3.3.2 is compatible with the
+# torch/torchaudio 2.6.0 pin above.
+pyannote.audio==3.3.2
+
+# ── ASR / Speaker verification (NeMo) ───────────────────────────────
+nemo_toolkit[asr]
+speechbrain
+
+# ── Translation ──────────────────────────────────────────────────────
+transformers
+sentencepiece
+# IndicTransToolkit — install via the pinned pre-Cython commit due to
+# Windows compilation constraints (see AI4Bharat repo issues for context):
+#   pip install git+https://github.com/AI4Bharat/IndicTransToolkit.git@<pinned-commit>
+
+# ── Medical correction (optional — only needed if MedGemma/RunPod
+#    correction step is re-enabled in transcribe.py) ────────────────
+requests
+
+# ── Utilities ────────────────────────────────────────────────────────
+python-dotenv
+soundfile
