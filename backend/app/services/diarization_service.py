@@ -78,7 +78,7 @@ def get_pipeline():
     global _pipeline
     if _pipeline is None:
 
-        hf_token = os.environ.get("HF_TOKEN")
+        hf_token = settings.hf_token or os.environ.get("HF_TOKEN")
         if not hf_token:
             raise EnvironmentError(
                 "HF_TOKEN is required to load pyannote/speaker-diarization-3.1 "
