@@ -17,12 +17,15 @@ def merge_by_identity(segments: list[dict], max_gap: float = 1.5) -> list[dict]:
         last = merged[-1]
         gap = seg["start"] - last["end"]
 
-        same_known_speaker = (
+        same_identified_speaker = (
             seg["speaker_id"] is not None
             and seg["speaker_id"] == last["speaker_id"]
         )
+        same_diarized_voice = (
+            seg["diarized_label"] == last["diarized_label"]
+        )
 
-        if same_known_speaker and gap <= max_gap:
+        if (same_identified_speaker or same_diarized_voice) and gap <= max_gap:
             last["end"] = max(last["end"], seg["end"])
             last["confidence"] = max(last["confidence"], seg["confidence"])
         else:

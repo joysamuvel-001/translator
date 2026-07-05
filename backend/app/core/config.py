@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # --- Correction: MedGemma via RunPod serverless ---
     runpod_api_key: str
     runpod_medgemma_endpoint_id: str
+    hf_token: str = ""
 
     class Config:
         env_file = ".env"

@@ -78,6 +78,7 @@ export default function App() {
         turns={turns}
         sessionTitle={session?.title ?? 'Loading session…'}
         turnCount={turns.length}
+        busy={busy}
       />
     </div>
   )

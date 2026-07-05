@@ -1,16 +1,28 @@
 import { Mic, Square, RotateCcw, Plus, ChevronDown } from 'lucide-react'
 
 const LANGUAGES = [
+  { code: 'as', label: 'Assamese' },
+  { code: 'bn', label: 'Bengali' },
+  { code: 'brx', label: 'Bodo' },
+  { code: 'doi', label: 'Dogri' },
+  { code: 'gu', label: 'Gujarati' },
   { code: 'hi', label: 'Hindi' },
+  { code: 'kn', label: 'Kannada' },
+  { code: 'kok', label: 'Konkani' },
+  { code: 'ks', label: 'Kashmiri' },
+  { code: 'mai', label: 'Maithili' },
+  { code: 'ml', label: 'Malayalam' },
+  { code: 'mni', label: 'Manipuri' },
+  { code: 'mr', label: 'Marathi' },
+  { code: 'ne', label: 'Nepali' },
+  { code: 'or', label: 'Odia' },
+  { code: 'pa', label: 'Punjabi' },
+  { code: 'sa', label: 'Sanskrit' },
+  { code: 'sat', label: 'Santali' },
+  { code: 'sd', label: 'Sindhi' },
   { code: 'ta', label: 'Tamil' },
   { code: 'te', label: 'Telugu' },
-  { code: 'kn', label: 'Kannada' },
-  { code: 'ml', label: 'Malayalam' },
-  { code: 'bn', label: 'Bengali' },
-  { code: 'mr', label: 'Marathi' },
-  { code: 'gu', label: 'Gujarati' },
-  { code: 'pa', label: 'Punjabi' },
-  { code: 'en', label: 'English' },
+  { code: 'ur', label: 'Urdu' },
 ]
 
 export default function RecordingPanel({

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.routers import enrollment, transcribe, sessions
+from app.services import diarization_service
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -31,6 +32,9 @@ app.include_router(sessions.router)
 async def warm_models():
     logging.info("Warming models — this may take a couple minutes on CPU...")
     from app.services import speaker_service, asr_service, translation_service
+
+    diarization_service.get_pipeline()
+    logging.info("pyannote diarization pipeline loaded")
 
     speaker_service.get_model()
     logging.info("TitaNet loaded")

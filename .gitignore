@@ -131,6 +131,4 @@ dist/
 *.bak
 *.tmp
 *.swp
-
-sessions/
-speakers/
+*.json
