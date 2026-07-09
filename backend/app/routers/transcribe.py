@@ -65,7 +65,7 @@ async def transcribe_turn(
     # Merge consecutive segments that pyannote diarized as the same speaker
     # AND TitaNet also identified as the same enrolled person — with a small
     # gap allowance for natural pauses within a continuous turn.
-    merged_segments = merge_by_identity(identified, max_gap=1.5)
+    merged_segments = merge_by_identity(identified)
     logger.info("Segments after identity-based merge: %s", merged_segments)
 
     created_turns = []
