@@ -12,6 +12,7 @@ export default function App() {
   const [session, setSession] = useState(null)
   const [turns, setTurns] = useState([])
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
   const [language, setLanguage] = useState('hi')
   const lastBlob = useRef(null)
   const { isRecording, elapsed, start, stop } = useRecorder()
@@ -24,12 +25,26 @@ export default function App() {
   const runTurn = async (blob) => {
     if (!session) return
     setBusy(true)
+    setError(null)
     lastBlob.current = blob
     try {
       const { turns: newTurns } = await api.transcribeTurn(session.id, blob, language)
-      setTurns((prev) => [...prev, ...(newTurns || [])])
+      if (!newTurns || newTurns.length === 0) {
+        // Backend responded 200 but produced no turns (e.g. silence, or
+        // every segment was too short to transcribe) — tell the user
+        // instead of leaving the feed looking broken.
+        setError('No speech was detected in that recording. Try again with a clearer sample.')
+      } else {
+        setTurns((prev) => [...prev, ...newTurns])
+      }
     } catch (err) {
+      // Previously this only did console.error(err) — the UI gave zero
+      // feedback on failure (network error, 500 from backend, RunPod
+      // timeout bubbling up as an exception, dev-proxy dropping a long
+      // request, etc). Now it's surfaced so "nothing happened" is never
+      // the actual user-visible outcome.
       console.error(err)
+      setError(err.message || 'Transcription failed. Check the backend logs and try again.')
     } finally {
       setBusy(false)
     }
@@ -37,6 +52,7 @@ export default function App() {
 
   const handleToggleRecording = async () => {
     if (!isRecording) {
+      setError(null)
       await start()
       return
     }
@@ -52,6 +68,7 @@ export default function App() {
     const fresh = await api.createSession('Consult — ' + new Date().toLocaleTimeString())
     setSession(fresh)
     setTurns([])
+    setError(null)
     lastBlob.current = null
   }
 
@@ -79,6 +96,7 @@ export default function App() {
         sessionTitle={session?.title ?? 'Loading session…'}
         turnCount={turns.length}
         busy={busy}
+        error={error}
       />
     </div>
   )

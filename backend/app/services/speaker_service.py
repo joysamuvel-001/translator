@@ -69,14 +69,48 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
+def get_clean_speech_waveform(waveform: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Runs diarization (VAD) on the waveform and returns a concatenated waveform
+    containing only the active speech segments, stripping out silence.
+    """
+    from app.services import diarization_service
+    try:
+        segments = diarization_service.diarize(waveform, sr)
+        if not segments:
+            return waveform
+        
+        chunks = []
+        for seg in segments:
+            start_idx = int(seg["start"] * sr)
+            end_idx = int(seg["end"] * sr)
+            chunks.append(waveform[start_idx:end_idx])
+            
+        if chunks:
+            return np.concatenate(chunks)
+    except Exception as e:
+        logger.warning("Could not perform speech cleaning on enrollment: %s", e)
+    return waveform
+
+
 def enroll_speaker(name: str, waveform: np.ndarray, sr: int) -> dict:
-    dur = duration_sec(waveform, sr)
+    # Clean the enrollment waveform (VAD silence stripping) to get a pure voiceprint
+    cleaned_waveform = get_clean_speech_waveform(waveform, sr)
+    dur = duration_sec(cleaned_waveform, sr)
+    
+    # Fallback to the original waveform if the cleaned one is too short
+    if dur < settings.enrollment_min_seconds:
+        logger.warning("Cleaned enrollment audio is too short (%.2fs), falling back to original waveform (%.2fs)",
+                       dur, duration_sec(waveform, sr))
+        cleaned_waveform = waveform
+        dur = duration_sec(waveform, sr)
+
     if dur < settings.enrollment_min_seconds:
         raise ValueError(
             f"Sample is {dur}s — record at least {settings.enrollment_min_seconds}s for a reliable voiceprint."
         )
 
-    vector = embed(waveform, sr)
+    vector = embed(cleaned_waveform, sr)
 
     # Look for an existing speaker with this exact name — average into it
     # instead of creating a duplicate entry, so repeated enrollments improve
@@ -125,20 +159,64 @@ def list_speakers() -> list[dict]:
     return speakers
 
 
-def identify_speaker(waveform: np.ndarray, sr: int) -> tuple[dict | None, float]:
-    query_vector = embed(waveform, sr)
-    best_record, best_score = None, -1.0
+def identify_speaker_vector(query_vector: np.ndarray, duration: float = 5.0) -> tuple[dict | None, float]:
+    scores = []
 
     for path in settings.speakers_dir.glob("*.json"):
         record = json.loads(path.read_text())
         score = cosine_similarity(query_vector, np.array(record["embedding"]))
-        logger.info("Speaker match: %s scored %.3f", record["name"], score)  # add this
-        if score > best_score:
-            best_record, best_score = record, score
+        logger.info("Speaker match candidate: %s scored %.3f", record["name"], score)
+        scores.append((record, score))
 
-    logger.info("Best match: %s (%.3f), threshold=%.3f", 
-                best_record["name"] if best_record else None, best_score, settings.speaker_match_threshold)  # add this
+    if not scores:
+        return None, 0.0
 
-    if best_record is None or best_score < settings.speaker_match_threshold:
-        return None, max(best_score, 0.0)
-    return best_record, best_score
+    # Sort scores descending
+    scores.sort(key=lambda x: x[1], reverse=True)
+    best_record, best_score = scores[0]
+
+    # Scale threshold dynamically based on speech duration.
+    # Short segments naturally yield lower cosine similarity scores.
+    base_threshold = settings.speaker_match_threshold
+    if duration < 4.0:
+        scale_factor = 0.75 + 0.25 * (max(duration, 0.5) / 4.0)
+        threshold = base_threshold * scale_factor
+    else:
+        threshold = base_threshold
+
+    # Standard check: if it passes the dynamic threshold, it's a solid match
+    if best_score >= threshold:
+        logger.info("Best match %s accepted via dynamic threshold %.3f (score: %.3f)", 
+                    best_record["name"], threshold, best_score)
+        return best_record, best_score
+
+    # Relative match strategy for borderline cases (between min_threshold of 0.45 and scaled threshold)
+    # This resolves matching for short utterances by evaluating the confidence margin
+    # against other enrolled speakers.
+    min_threshold = 0.45
+    if best_score >= min_threshold:
+        if len(scores) == 1:
+            logger.info("Best match %s accepted via single-speaker fallback (score: %.3f >= %.3f)", 
+                        best_record["name"], best_score, min_threshold)
+            return best_record, best_score
+        else:
+            second_best_record, second_best_score = scores[1]
+            margin = best_score - second_best_score
+            if margin >= 0.15:
+                logger.info("Best match %s accepted via confidence margin of %.3f over %s (score: %.3f, runner-up: %.3f)", 
+                            best_record["name"], margin, second_best_record["name"], best_score, second_best_score)
+                return best_record, best_score
+            else:
+                logger.info("Best match %s rejected: score %.3f below threshold %.3f, and margin %.3f is insufficient (< 0.15)",
+                            best_record["name"], best_score, threshold, margin)
+    else:
+        logger.info("Best match %s rejected: score %.3f is below absolute minimum threshold %.3f",
+                    best_record["name"] if best_record else None, best_score, min_threshold)
+
+    return None, max(best_score, 0.0)
+
+
+def identify_speaker(waveform: np.ndarray, sr: int) -> tuple[dict | None, float]:
+    query_vector = embed(waveform, sr)
+    dur = duration_sec(waveform, sr)
+    return identify_speaker_vector(query_vector, duration=dur)

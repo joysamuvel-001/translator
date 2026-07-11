@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     runpod_api_key: str = ""
     runpod_medgemma_endpoint_id: str = ""
     hf_token: str = ""
+    pause_medgemma: bool = True
 
     class Config:
         env_file = ".env"
