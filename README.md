@@ -21,19 +21,26 @@ Multilingual consult transcription for clinical settings. Records a doctor–pat
    (load_waveform + resample_waveform)
         │
         ▼
-3. VAD segmentation (segment_by_voice_activity)
-   → splits on silence into rough speech chunks
+3. Diarization (diarization_service.diarize)
+   → pyannote 3.1 returns speaker turns with labels
+     (SPEAKER_00, SPEAKER_01, …). These labels are the ONLY
+     authority on where the voice changes.
         │
         ▼
-4. Speaker-change re-split (resplit_by_speaker_change)
-   → further splits long VAD chunks wherever the embedding
-     drifts mid-segment (catches back-to-back speaker changes)
+4. Label identification (speaker_service.assign_labels_to_speakers)
+   → pools each label's speech, embeds it once with TitaNet, and
+     assigns labels to enrolled speakers by comparing the labels
+     AGAINST EACH OTHER, not against a fixed threshold each.
+     Only the doctor is enrolled, so the best-scoring label is the
+     doctor and unclaimed labels become "Patient".
+        │
+        ▼
+5. Merge (merge.merge_by_identity)
+   → rejoins consecutive segments sharing a pyannote label across
+     short pauses. Never merges across different labels.
         │
         ▼
    FOR EACH final segment:
-        │
-        ├─► 5. Speaker ID (speaker_service.identify_speaker)
-        │      → cosine similarity vs enrolled voiceprints
         │
         ├─► 6. ASR transcription (asr_service.transcribe)
         │      → forced to `language_hint`, produces source_text

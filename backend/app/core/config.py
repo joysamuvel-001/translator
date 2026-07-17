@@ -38,7 +38,22 @@ class Settings(BaseSettings):
 
     # --- Speaker ID: NVIDIA TitaNet-Large ---
     speaker_model_name: str = "nvidia/speakerverification_en_titanet_large"
-    speaker_match_threshold: float = 0.65
+    # Labels are assigned to enrolled speakers by comparing them against each
+    # other (see speaker_service.assign_labels_to_speakers), so these two are
+    # sanity bounds on that choice, not a match threshold.
+    #
+    # presence_floor: below this, we say the enrolled speaker isn't in the
+    #   audio at all rather than crowning the best of a bad set.
+    # same_voice_margin: a second label within this of a speaker's best label
+    #   is treated as the same person split by pyannote, not a new speaker.
+    #
+    # Both need tuning against real recordings: TitaNet is English-trained and
+    # scores compress on Indic speech, so these sit lower than the model card's
+    # verification thresholds would suggest.
+    speaker_presence_floor: float = 0.50
+    speaker_same_voice_margin: float = 0.08
+    # Unenrolled voices in a two-person consult are labelled with this.
+    unenrolled_speaker_name: str = "Patient"
     enrollment_min_seconds: float = 5.0
     enrollment_max_seconds: float = 10.0
 

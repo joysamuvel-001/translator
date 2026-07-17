@@ -15,6 +15,10 @@ from app.models.schemas import TranscribeResponse
 logger = logging.getLogger("medtranscribe.transcribe")
 router = APIRouter(prefix="/api/transcribe", tags=["transcribe"])
 
+# Below this much pooled speech a label can't be identified reliably, so it
+# falls through to the unenrolled name rather than guessing.
+MIN_SPEECH_FOR_ID_SEC = 0.5
+
 
 @router.post("", response_model=TranscribeResponse)
 async def transcribe_turn(
@@ -22,6 +26,7 @@ async def transcribe_turn(
     session_id: str = Form(...),
     language_hint: str = Form(...),
 ):
+    settings = get_settings()
     raw = await audio.read()
     waveform, sr = load_waveform(raw)
     waveform, sr = resample_waveform(waveform, sr, target_sr=16000)
@@ -40,51 +45,42 @@ async def transcribe_turn(
 
     logger.info("Diarized segments: %s", diarized_segments)
 
-    # Group segments by diarized label to extract and aggregate embeddings
-    label_embeddings = {}
+    # Pool each label's speech into one waveform and embed that once, rather
+    # than embedding each segment separately and averaging. A short backchannel
+    # ("mm-hmm") carries too little signal to embed alone, and pooling mirrors
+    # enrollment, which also embeds concatenated clean speech.
+    label_chunks: dict[str, list] = {}
     for seg in diarized_segments:
         start_idx = int(seg["start"] * sr)
         end_idx = int(seg["end"] * sr)
-        chunk = waveform[start_idx:end_idx]
+        label_chunks.setdefault(seg["diarized_label"], []).append(waveform[start_idx:end_idx])
 
-        if len(chunk) < int(0.3 * sr):
+    label_vectors = {}
+    for label, chunks in label_chunks.items():
+        pooled = np.concatenate(chunks)
+        if len(pooled) < int(MIN_SPEECH_FOR_ID_SEC * sr):
+            logger.info(
+                "Label %s has only %.2fs of speech — too little to identify",
+                label, len(pooled) / sr,
+            )
             continue
-
         try:
-            emb = speaker_service.embed(chunk, sr)
-            label = seg["diarized_label"]
-            if label not in label_embeddings:
-                label_embeddings[label] = []
-            label_embeddings[label].append(emb)
+            label_vectors[label] = speaker_service.embed_normalized(pooled, sr)
         except Exception as e:
-            logger.error("Failed to extract embedding for segment: %s", e)
+            logger.error("Failed to embed label %s: %s", label, e)
 
-    # Calculate total duration for each diarized label
-    label_durations = {}
-    for seg in diarized_segments:
-        label = seg["diarized_label"]
-        duration = seg["end"] - seg["start"]
-        label_durations[label] = label_durations.get(label, 0.0) + duration
+    label_identity = speaker_service.assign_labels_to_speakers(label_vectors)
 
-    # Compute consolidated embedding and identify each diarized speaker label
-    label_identity = {}
-    for label, embs in label_embeddings.items():
-        if not embs:
-            label_identity[label] = (None, 0.0)
-            continue
-        # Average the embeddings
-        avg_emb = np.mean(embs, axis=0)
-        # Normalize the averaged embedding
-        norm = np.linalg.norm(avg_emb)
-        if norm > 1e-9:
-            avg_emb = avg_emb / norm
-        
-        # Match using the aggregated embedding vector and its duration
-        total_duration = label_durations.get(label, 0.0)
-        speaker_record, confidence = speaker_service.identify_speaker_vector(avg_emb, duration=total_duration)
-        label_identity[label] = (speaker_record, confidence)
+    # Name whatever no enrolled voiceprint claimed. Only the doctor is
+    # enrolled, so any other voice in the room is the patient.
+    label_order = list(dict.fromkeys(seg["diarized_label"] for seg in diarized_segments))
+    unenrolled = [lbl for lbl in label_order if label_identity.get(lbl, (None, 0.0))[0] is None]
+    base_name = settings.unenrolled_speaker_name
+    patient_names = {
+        label: (base_name if len(unenrolled) == 1 else f"{base_name} {i}")
+        for i, label in enumerate(unenrolled, start=1)
+    }
 
-    # Identify each diarized segment against the aggregated label identity
     identified = []
     for seg in diarized_segments:
         label = seg["diarized_label"]
@@ -94,13 +90,12 @@ async def transcribe_turn(
             "end": seg["end"],
             "diarized_label": label,
             "speaker_id": speaker_record["id"] if speaker_record else None,
-            "speaker_name": speaker_record["name"] if speaker_record else label,
+            "speaker_name": speaker_record["name"] if speaker_record else patient_names[label],
             "confidence": confidence,
         })
 
-    # Merge consecutive segments that pyannote diarized as the same speaker
-    # AND TitaNet also identified as the same enrolled person — with a small
-    # gap allowance for natural pauses within a continuous turn.
+    # Rejoin consecutive segments pyannote gave the same label, with a small
+    # gap allowance so a natural pause mid-turn isn't split into two turns.
     merged_segments = merge_by_identity(identified)
     logger.info("Segments after identity-based merge: %s", merged_segments)
 
@@ -138,7 +133,6 @@ async def transcribe_turn(
         created_turns.append(turn)
 
     correction_applied = False
-    settings = get_settings()
     if created_turns and not settings.pause_medgemma:
         # MedGemma corrects the English translation (medical terms, drug
         # names, dosages) — NOT the original-language source_text. Runs

@@ -69,6 +69,15 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
+def _normalize(v: np.ndarray) -> np.ndarray:
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def embed_normalized(waveform: np.ndarray, sr: int) -> np.ndarray:
+    """TitaNet returns unnormalized vectors; normalize so they can be averaged."""
+    return _normalize(embed(waveform, sr))
+
+
 def get_clean_speech_waveform(waveform: np.ndarray, sr: int) -> np.ndarray:
     """
     Runs diarization (VAD) on the waveform and returns a concatenated waveform
@@ -110,7 +119,7 @@ def enroll_speaker(name: str, waveform: np.ndarray, sr: int) -> dict:
             f"Sample is {dur}s — record at least {settings.enrollment_min_seconds}s for a reliable voiceprint."
         )
 
-    vector = embed(cleaned_waveform, sr)
+    vector = embed_normalized(cleaned_waveform, sr)
 
     # Look for an existing speaker with this exact name — average into it
     # instead of creating a duplicate entry, so repeated enrollments improve
@@ -125,11 +134,13 @@ def enroll_speaker(name: str, waveform: np.ndarray, sr: int) -> dict:
             break
 
     if existing_record:
-        old_vector = np.array(existing_record["embedding"])
+        # Normalize on read as well: records written before embeddings were
+        # normalized at enrollment are still raw, and averaging a raw vector
+        # against a unit one lets whichever is larger dominate the voiceprint.
+        old_vector = _normalize(np.array(existing_record["embedding"]))
         prev_count = existing_record.get("sample_count", 1)
         new_count = prev_count + 1
-        averaged = (old_vector * prev_count + vector) / new_count
-        averaged = averaged / (np.linalg.norm(averaged) + 1e-9)
+        averaged = _normalize(old_vector * prev_count + vector)
 
         existing_record["embedding"] = averaged.tolist()
         existing_record["sample_count"] = new_count
@@ -159,64 +170,84 @@ def list_speakers() -> list[dict]:
     return speakers
 
 
-def identify_speaker_vector(query_vector: np.ndarray, duration: float = 5.0) -> tuple[dict | None, float]:
-    scores = []
+def assign_labels_to_speakers(
+    label_vectors: dict[str, np.ndarray],
+) -> dict[str, tuple[dict | None, float]]:
+    """
+    Decides which diarized label belongs to which enrolled speaker, by
+    comparing the labels against each other rather than against a fixed
+    threshold each.
 
-    for path in settings.speakers_dir.glob("*.json"):
-        record = json.loads(path.read_text())
-        score = cosine_similarity(query_vector, np.array(record["embedding"]))
-        logger.info("Speaker match candidate: %s scored %.3f", record["name"], score)
-        scores.append((record, score))
+    This is a *relative* choice on purpose. With one voiceprint enrolled (the
+    doctor), an absolute threshold cannot express "this label is more
+    doctor-like than that one" — every voice either clears the bar or doesn't,
+    so an unenrolled patient scoring moderately well gets stamped as the
+    doctor. Scoring the labels against each other and letting the best one win
+    is what actually answers "which of these people is the doctor".
 
-    if not scores:
-        return None, 0.0
+    Returns {label: (speaker_record | None, score)}. Labels no enrolled
+    speaker claims come back as None for the caller to name.
+    """
+    assignment: dict[str, tuple[dict | None, float]] = {
+        label: (None, 0.0) for label in label_vectors
+    }
 
-    # Sort scores descending
-    scores.sort(key=lambda x: x[1], reverse=True)
-    best_record, best_score = scores[0]
+    enrolled = [json.loads(p.read_text()) for p in settings.speakers_dir.glob("*.json")]
+    if not enrolled or not label_vectors:
+        return assignment
 
-    # Scale threshold dynamically based on speech duration.
-    # Short segments naturally yield lower cosine similarity scores.
-    base_threshold = settings.speaker_match_threshold
-    if duration < 4.0:
-        scale_factor = 0.75 + 0.25 * (max(duration, 0.5) / 4.0)
-        threshold = base_threshold * scale_factor
-    else:
-        threshold = base_threshold
+    by_id = {r["id"]: r for r in enrolled}
 
-    # Standard check: if it passes the dynamic threshold, it's a solid match
-    if best_score >= threshold:
-        logger.info("Best match %s accepted via dynamic threshold %.3f (score: %.3f)", 
-                    best_record["name"], threshold, best_score)
-        return best_record, best_score
+    candidates = []
+    for record in enrolled:
+        ref = _normalize(np.array(record["embedding"]))
+        for label, vec in label_vectors.items():
+            score = cosine_similarity(ref, vec)
+            logger.info("Label %s vs %s: %.3f", label, record["name"], score)
+            candidates.append((score, record["id"], label))
 
-    # Relative match strategy for borderline cases (between min_threshold of 0.45 and scaled threshold)
-    # This resolves matching for short utterances by evaluating the confidence margin
-    # against other enrolled speakers.
-    min_threshold = 0.45
-    if best_score >= min_threshold:
-        if len(scores) == 1:
-            logger.info("Best match %s accepted via single-speaker fallback (score: %.3f >= %.3f)", 
-                        best_record["name"], best_score, min_threshold)
-            return best_record, best_score
-        else:
-            second_best_record, second_best_score = scores[1]
-            margin = best_score - second_best_score
-            if margin >= 0.15:
-                logger.info("Best match %s accepted via confidence margin of %.3f over %s (score: %.3f, runner-up: %.3f)", 
-                            best_record["name"], margin, second_best_record["name"], best_score, second_best_score)
-                return best_record, best_score
-            else:
-                logger.info("Best match %s rejected: score %.3f below threshold %.3f, and margin %.3f is insufficient (< 0.15)",
-                            best_record["name"], best_score, threshold, margin)
-    else:
-        logger.info("Best match %s rejected: score %.3f is below absolute minimum threshold %.3f",
-                    best_record["name"] if best_record else None, best_score, min_threshold)
+    candidates.sort(key=lambda c: c[0], reverse=True)
 
-    return None, max(best_score, 0.0)
+    floor = settings.speaker_presence_floor
+    claimed_labels: set[str] = set()
+    claimed_speakers: set[str] = set()
+    primary_score: dict[str, float] = {}
 
+    # Pass 1: each enrolled speaker takes the single label that scores highest
+    # against their voiceprint. The floor is what keeps argmax from crowning
+    # someone when the enrolled speaker never actually speaks in this audio.
+    for score, sid, label in candidates:
+        if score < floor:
+            break
+        if sid in claimed_speakers or label in claimed_labels:
+            continue
+        assignment[label] = (by_id[sid], score)
+        claimed_labels.add(label)
+        claimed_speakers.add(sid)
+        primary_score[sid] = score
+        logger.info("Label %s -> %s (primary, score %.3f)", label, by_id[sid]["name"], score)
 
-def identify_speaker(waveform: np.ndarray, sr: int) -> tuple[dict | None, float]:
-    query_vector = embed(waveform, sr)
-    dur = duration_sec(waveform, sr)
-    return identify_speaker_vector(query_vector, duration=dur)
+    # Pass 2: pyannote sometimes splits one person across several labels. A
+    # leftover label scoring nearly as high as a speaker's primary label is
+    # that same person, not a new one — without this, a doctor talking alone
+    # gets a phantom second speaker invented from their own split speech.
+    for score, sid, label in candidates:
+        if label in claimed_labels or sid not in primary_score:
+            continue
+        if score < floor:
+            continue
+        margin = primary_score[sid] - score
+        if margin <= settings.speaker_same_voice_margin:
+            assignment[label] = (by_id[sid], score)
+            claimed_labels.add(label)
+            logger.info(
+                "Label %s -> %s (same voice over-segmented, score %.3f, %.3f below primary)",
+                label, by_id[sid]["name"], score, margin,
+            )
+
+    for label in label_vectors:
+        if label not in claimed_labels:
+            best = max((c[0] for c in candidates if c[2] == label), default=0.0)
+            logger.info("Label %s unclaimed (best score %.3f) — caller will name it", label, best)
+
+    return assignment
